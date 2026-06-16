@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+logs/
+*.pdf
+.git/
+.gitignore
+stress_test.py
+docs/
+README.md
