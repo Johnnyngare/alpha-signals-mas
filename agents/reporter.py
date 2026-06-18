@@ -176,10 +176,10 @@ def reporter_node(state: GraphState) -> dict:
 ## Methodology
 
 - **Data Sources:** Betway, 1xBet, William Hill, Paddy Power (via The-Odds-API live feed)
-- **Anomaly Detection:** Best vs worst odds discrepancy across all bookmakers for each outcome
+- **Anomaly Detection:** Best-vs-worst odds discrepancy across all {len(set(r.source for r in state.raw_data))} bookmakers per outcome market — not pairwise comparison
 - **Detection Threshold:** {5.0}% deviation triggers flagging
-- **Arbitrage Detection:** Sum of implied probabilities across best available odds per outcome
-- **Kelly Formula:** f* = (b*p - q) / b, quartered for conservative sizing, capped at 25%
+- **Arbitrage Detection:** Sum of implied probabilities across best available odds per outcome (margin < 1.0 confirms arb window)
+- **Kelly Formula:** f* = (b*p - q) / b — consensus probability derived from all bookmakers, quartered for conservative sizing, capped at 25%
 - **Analysis Mode:** {mode_label}
 - **Report Engine:** Agent C v2.0 -- LangGraph Multi-Agent System
 """

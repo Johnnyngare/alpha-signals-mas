@@ -6,3 +6,8 @@ __pycache__/
 logs/
 *.pdf
 .DS_Store
+DejaVuSansCondensed*.ttf
+data/
+data/
+logs/*.log
+logs/*.log.*

@@ -1,5 +1,5 @@
+import os
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 from state import GraphState, MAX_RETRIES
 from agents.scraper import scraper_node
 from agents.analyst import analyst_node
@@ -32,7 +32,7 @@ def audit_router(state: GraphState) -> str:
     return "end"
 
 
-def build_graph() -> object:
+def build_graph() -> tuple:
     builder = StateGraph(GraphState)
 
     builder.add_node("scraper",     scraper_node)
@@ -60,16 +60,16 @@ def build_graph() -> object:
         }
     )
 
-    checkpointer = MemorySaver()
+    os.makedirs("data", exist_ok=True)
+    
+    # Define the DB path safely as a string, avoiding early instantiation 
+    checkpoint_db_path = "data/langgraph_checkpoints.db"
 
-    compiled = builder.compile(
-        interrupt_before=["broadcaster"],
-        checkpointer=checkpointer,
-    )
-
-    print("[Graph] StateGraph compiled successfully.")
+    print("[Graph] StateGraph building sequence initialized successfully.")
     print("[Graph] Topology: scraper -> analyst -> reporter -> auditor -> (conditional) -> [INTERRUPT] -> broadcaster -> END")
-    return compiled, checkpointer
+    
+    return builder, checkpoint_db_path
 
 
-graph, checkpointer = build_graph()
+# Unpack the builder instance and the connection path safely
+builder_instance, checkpoint_db_path = build_graph()

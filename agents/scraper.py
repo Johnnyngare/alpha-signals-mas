@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 import requests
 from state import GraphState, MarketRecord
+import logging
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
