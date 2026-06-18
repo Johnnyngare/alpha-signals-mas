@@ -4,3 +4,4 @@ pydantic==2.10.4
 python-dotenv==1.0.1
 requests==2.32.3
 schedule==1.2.2langgraph-checkpoint-sqlite==2.0.10
+pytest==8.3.5
