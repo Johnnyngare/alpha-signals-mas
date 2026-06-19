@@ -1,12 +1,14 @@
 import os
 import hashlib
 import hmac
+import sqlite3
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
 
 MASTER_SALT: str = os.getenv("SUBSCRIPTION_SALT", "alpha_signals_default_salt")
+DB_PATH:     str = "data/alpha_signals.db"
 
 
 class SubscriptionTier:
@@ -33,31 +35,68 @@ def generate_token_hash(raw_token: str) -> str:
     ).hexdigest()
 
 
+def _verify_from_database(token_hash: str) -> tuple[bool, str]:
+    """
+    Secondary verification path for subscribers registered via
+    the payment webhook. Checks the subscribers table in SQLite.
+    Returns (False, reason) if the database does not exist yet.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT name, tier, active, subscription_end FROM subscribers WHERE token_hash = ?",
+            (token_hash,)
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return False, "Token not recognised in database. Access denied."
+
+        if not row["active"]:
+            return False, f"Subscription for '{row['name']}' is inactive."
+
+        if row["subscription_end"]:
+            try:
+                expiry = datetime.fromisoformat(row["subscription_end"]).replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > expiry:
+                    return False, f"Subscription for '{row['name']}' has expired."
+            except ValueError:
+                pass
+
+        return True, f"Access granted for '{row['name']}' (tier: {row['tier']})."
+
+    except Exception as e:
+        return False, f"Database lookup failed: {str(e)}"
+
+
 def verify_subscriber(raw_token: str) -> tuple[bool, str]:
     if not raw_token:
         return False, "No subscription token provided."
 
     token_hash = generate_token_hash(raw_token)
 
+    # Check static registry first (existing subscribers like Johnny)
     subscriber = SUBSCRIBER_REGISTRY.get(token_hash)
-    if not subscriber:
-        return False, f"Token not recognised. Access denied."
+    if subscriber:
+        if not subscriber.get("active", False):
+            return False, f"Subscription for '{subscriber['name']}' is inactive."
 
-    if not subscriber.get("active", False):
-        return False, f"Subscription for '{subscriber['name']}' is inactive."
+        expires_str = subscriber.get("expires", "")
+        if expires_str:
+            try:
+                expiry = datetime.fromisoformat(expires_str).replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > expiry:
+                    return False, f"Subscription for '{subscriber['name']}' expired on {expires_str}."
+            except ValueError:
+                pass
 
-    expires_str = subscriber.get("expires", "")
-    if expires_str:
-        try:
-            expiry = datetime.fromisoformat(expires_str).replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) > expiry:
-                return False, f"Subscription for '{subscriber['name']}' expired on {expires_str}."
-        except ValueError:
-            pass
+        tier = subscriber.get("tier", SubscriptionTier.FREE)
+        name = subscriber.get("name", "Unknown")
+        return True, f"Access granted for '{name}' (tier: {tier})."
 
-    tier = subscriber.get("tier", SubscriptionTier.FREE)
-    name = subscriber.get("name", "Unknown")
-    return True, f"Access granted for '{name}' (tier: {tier})."
+    # Fall through to database for webhook-registered subscribers
+    return _verify_from_database(token_hash)
 
 
 def requires_subscription(func):
