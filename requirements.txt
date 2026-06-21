@@ -6,3 +6,4 @@ requests==2.32.3
 schedule==1.2.2langgraph-checkpoint-sqlite==2.0.10
 pytest==8.3.5
 aiohttp==3.11.18
+streamlit==1.45.1

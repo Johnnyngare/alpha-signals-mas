@@ -33,9 +33,9 @@ def _detect_arb(
     if not all([home_key, draw_key, away_key]):
         return None
 
-    best_home_bk  = max(outcome_map[home_key], key=outcome_map[home_key].get)
-    best_draw_bk  = max(outcome_map[draw_key], key=outcome_map[draw_key].get)
-    best_away_bk  = max(outcome_map[away_key], key=outcome_map[away_key].get)
+    best_home_bk  = max(sorted(outcome_map[home_key].keys()), key=outcome_map[home_key].get)
+    best_draw_bk  = max(sorted(outcome_map[draw_key].keys()), key=outcome_map[draw_key].get)
+    best_away_bk  = max(sorted(outcome_map[away_key].keys()), key=outcome_map[away_key].get)
 
     best_home_odd = outcome_map[home_key][best_home_bk]
     best_draw_odd = outcome_map[draw_key][best_draw_bk]
@@ -130,9 +130,10 @@ def _run_value_sheet_analysis(
                 findings.append(f"SKIP [{market_key}]: Only one source, cannot compare.")
                 continue
 
-            sorted_bks  = sorted(bookmaker_odds.items(), key=lambda x: x[1], reverse=True)
-            best_bk,  best_odd  = sorted_bks[0]
-            worst_bk, worst_odd = sorted_bks[-1]
+            sorted_by_name = sorted(bookmaker_odds.items(), key=lambda x: x[0])
+            sorted_by_odds = sorted(sorted_by_name, key=lambda x: x[1], reverse=True)
+            best_bk,  best_odd  = sorted_by_odds[0]
+            worst_bk, worst_odd = sorted_by_odds[-1]
 
             discrepancy_pct = abs(best_odd - worst_odd) / worst_odd * 100
 

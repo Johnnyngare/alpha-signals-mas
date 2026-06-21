@@ -99,7 +99,14 @@ def _parse_events(
 
                     if outcome_price <= 1.0:
                         logger.warning(
-                            "Suspicious odds value %.4f for %s in %s vs %s. Skipping.",
+                            "Suspicious odds value %.4f for %s in %s vs %s — below floor. Skipping.",
+                            outcome_price, outcome_name, home, away
+                        )
+                        continue
+
+                    if outcome_price >= 100.0:
+                        logger.warning(
+                            "Implausible odds value %.2f for %s in %s vs %s — likely placeholder. Skipping.",
                             outcome_price, outcome_name, home, away
                         )
                         continue

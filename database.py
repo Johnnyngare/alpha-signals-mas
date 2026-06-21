@@ -1,3 +1,4 @@
+#database.py
 """
 Database persistence layer for Alpha Signals MAS.
 
@@ -8,25 +9,29 @@ module touches the database directly — they call functions
 defined here. This keeps the database schema decoupled from
 the agent logic so either can change independently.
 
-TWO TABLES:
-    pipeline_runs     — one row per pipeline execution
-    market_anomalies  — one row per flagged market per run
-
 The database file lives at data/alpha_signals.db.
 It is excluded from git via .gitignore.
-It persists across container restarts when mounted as a volume.
 """
 
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
 logger = logging.getLogger(__name__)
 
 DB_PATH: str = "data/alpha_signals.db"
+SCHEMA_VERSION: str = "1.0.0"
+
+"""
+MIGRATION POLICY (until Alembic is introduced):
+------------------------------------------------
+When a schema change is required:
+1. Increment SCHEMA_VERSION following semver (e.g., 1.0.1)
+2. Add the migration SQL as a separate function named migrate_X_Y_Z()
+3. Call the migration function inside initialize_database() after the CREATE TABLE blocks.
+"""
 
 
 def _ensure_data_dir() -> None:
@@ -39,8 +44,7 @@ def _get_connection() -> Generator[sqlite3.Connection, None, None]:
     Context manager that yields a database connection and guarantees
     the connection is closed even if an exception occurs mid-operation.
     Uses WAL (Write-Ahead Logging) journal mode for better concurrent
-    read performance — critical when the scheduler runs alongside
-    a future analytics query.
+    read performance — critical when the dashboard reads while the pipeline writes.
     """
     _ensure_data_dir()
     conn = sqlite3.connect(DB_PATH)
@@ -61,9 +65,39 @@ def initialize_database() -> None:
     """
     Creates all tables if they don't already exist.
     Safe to call on every startup — uses CREATE TABLE IF NOT EXISTS.
-    Call this once at the top of run.py after configure_logging().
     """
     with _get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscribers (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                name              TEXT NOT NULL,
+                phone             TEXT NOT NULL UNIQUE,
+                email             TEXT,
+                tier              TEXT NOT NULL DEFAULT 'free',
+                token_hash        TEXT NOT NULL UNIQUE,
+                active            INTEGER NOT NULL DEFAULT 0,
+                subscription_start TEXT,
+                subscription_end   TEXT,
+                mpesa_ref         TEXT,
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscriber_id     INTEGER NOT NULL,
+                amount_kes        REAL NOT NULL,
+                currency          TEXT NOT NULL DEFAULT 'KES',
+                gateway           TEXT NOT NULL,
+                gateway_ref       TEXT NOT NULL UNIQUE,
+                status            TEXT NOT NULL DEFAULT 'pending',
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (subscriber_id) REFERENCES subscribers(id)
+            )
+        """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pipeline_runs (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,27 +140,18 @@ def initialize_database() -> None:
             )
         """)
 
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_runs_run_id
-            ON pipeline_runs(run_id)
-        """)
-
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_anomalies_fixture
-            ON market_anomalies(fixture)
-        """)
-
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_anomalies_run_id
-            ON market_anomalies(run_id)
-        """)
+        # Performance Indexes
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_run_id ON pipeline_runs(run_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_anomalies_fixture ON market_anomalies(fixture)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_anomalies_run_id ON market_anomalies(run_id)")
 
     logger.info("Database initialized. Path: %s", DB_PATH)
+    logger.info("Schema version: %s", SCHEMA_VERSION)
 
 
 def save_pipeline_run(
-    run_id:            str,
-    executed_at:       str,
+    run_id:           str,
+    executed_at:      str,
     fixtures_scanned:  int,
     records_ingested:  int,
     markets_analysed:  int,
@@ -142,10 +167,7 @@ def save_pipeline_run(
     data_source:       str = "live",
     sport_key:         str = "soccer_fifa_world_cup",
 ) -> int:
-    """
-    Inserts one row into pipeline_runs.
-    Returns the new row's database ID.
-    """
+    """Inserts one row into pipeline_runs and returns its database ID."""
     with _get_connection() as conn:
         cursor = conn.execute("""
             INSERT INTO pipeline_runs (
@@ -178,13 +200,7 @@ def save_market_anomalies(
 ) -> int:
     """
     Parses the analyst's findings list and inserts one row per
-    ANOMALY finding into market_anomalies.
-
-    kelly_map: dict mapping market string to (kelly_fraction, ev)
-    for markets that received a Kelly suggestion. Used to enrich
-    the anomaly record with sizing data.
-
-    Returns the number of anomaly rows inserted.
+    ANOMALY finding into market_anomalies safely.
     """
     rows_inserted = 0
 
@@ -194,9 +210,9 @@ def save_market_anomalies(
                 continue
 
             try:
-                # Parse: "ANOMALY [fixture -- outcome]: BkA=x, BkB=y, Discrepancy=z%"
+                # Target: "ANOMALY [fixture -- outcome]: BkA=x, BkB=y, Discrepancy=z%"
                 bracket_content = finding.split("[")[1].split("]")[0]
-                parts            = bracket_content.split(" -- ", 1)
+                parts           = bracket_content.split(" -- ", 1)
                 fixture          = parts[0].strip()
                 outcome          = parts[1].strip() if len(parts) > 1 else "Unknown"
 
@@ -243,32 +259,23 @@ def save_market_anomalies(
                 )
                 continue
 
-    logger.info(
-        "Anomalies saved. run_id=%s rows_inserted=%d",
-        run_id, rows_inserted
-    )
+    logger.info("Anomalies saved. run_id=%s rows_inserted=%d", run_id, rows_inserted)
     return rows_inserted
 
 
 def get_recent_runs(limit: int = 10) -> list[dict]:
-    """
-    Returns the most recent pipeline runs as a list of dicts.
-    Used for historical analysis and the future dashboard.
-    """
+    """Returns the most recent pipeline runs sorted by pipeline execution time."""
     with _get_connection() as conn:
         rows = conn.execute("""
             SELECT * FROM pipeline_runs
-            ORDER BY created_at DESC
+            ORDER BY executed_at DESC -- Fixed: Synchronized with dashboard.py sorting index
             LIMIT ?
         """, (limit,)).fetchall()
         return [dict(row) for row in rows]
 
 
 def get_most_flagged_fixtures(limit: int = 10) -> list[dict]:
-    """
-    Returns fixtures ranked by how many times they've been flagged
-    across all historical runs. Identifies consistently inefficient markets.
-    """
+    """Returns fixtures ranked by how many times they've been flagged."""
     with _get_connection() as conn:
         rows = conn.execute("""
             SELECT
